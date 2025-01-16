@@ -1,0 +1,29 @@
+name: Windows x86-64
+
+on: [ push, pull_request ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Installing Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'jetbrains'
+          java-version: '21'
+
+      # dist
+      - run: |
+          .\gradlew.bat dist --no-daemon
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: termora-windows-x86-64
+          path: |
+            build/distributions/*.zip
+            build/distributions/*.msi

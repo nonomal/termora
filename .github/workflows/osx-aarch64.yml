@@ -1,0 +1,35 @@
+name: macOS aarch64
+
+on: [ push, pull_request ]
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+
+      # download jdk
+      - run: wget -O $RUNNER_TEMP/java_package.tar.gz https://cache-redirector.jetbrains.com/intellij-jbr/jbrsdk-21.0.5-osx-aarch64-b509.30.tar.gz
+
+      # install jdk
+      - name: Installing Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'jdkfile'
+          jdkFile: ${{ runner.temp }}/java_package.tar.gz
+          java-version: '21.0.5'
+          architecture: aarch64
+
+
+      # dist
+      - run: |
+          ./gradlew dist --no-daemon
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: termora-osx-aarch64
+          path: build/distributions/*.dmg
