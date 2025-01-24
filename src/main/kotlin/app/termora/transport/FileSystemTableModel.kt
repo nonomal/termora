@@ -66,7 +66,10 @@ class FileSystemTableModel(private val fileSystem: FileSystem) : DefaultTableMod
             when (column) {
                 COLUMN_NAME -> path
                 COLUMN_FILE_SIZE -> if (path.isDirectory) StringUtils.EMPTY else formatBytes(path.fileSize)
-                COLUMN_TYPE -> if (path.isDirectory) I18n.getString("termora.transport.table.type.folder") else path.extension
+                COLUMN_TYPE -> if (path.isDirectory) I18n.getString("termora.transport.table.type.folder")
+                else if (path.isSymbolicLink) I18n.getString("termora.transport.table.type.symbolic-link")
+                else path.extension
+
                 COLUMN_LAST_MODIFIED_TIME -> DateFormatUtils.format(Date(path.lastModifiedTime), "yyyy/MM/dd HH:mm")
 
                 // 如果是本地的并且还是Windows系统
@@ -173,6 +176,7 @@ class FileSystemTableModel(private val fileSystem: FileSystem) : DefaultTableMod
         val extension by lazy { path.extension }
 
         open val isDirectory by lazy { path.isDirectory() }
+        open val isSymbolicLink by lazy { path.isSymbolicLink() }
         open val isHidden by lazy { fileName != ".." && path.isHidden() }
         open val fileSize by lazy { path.fileSize() }
         open val lastModifiedTime by lazy { Files.getLastModifiedTime(path).toMillis() }
@@ -227,8 +231,10 @@ class FileSystemTableModel(private val fileSystem: FileSystem) : DefaultTableMod
             }
         }
 
-        override val isDirectory: Boolean
-            get() = attributes.isDirectory
+        override val isDirectory by lazy { attributes.isDirectory || (isSymbolicLink && Files.isDirectory(path)) }
+
+        override val isSymbolicLink: Boolean
+            get() = attributes.isSymbolicLink
 
         override val isHidden: Boolean
             get() = fileName != ".." && fileName.startsWith(".")
