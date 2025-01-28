@@ -67,37 +67,53 @@ class HostDialog(owner: Window, host: Host? = null) : DialogWrapper(owner) {
 
     private suspend fun testConnection(host: Host) {
         val owner = this
-        if (host.protocol != Protocol.SSH) {
+        if (host.protocol == Protocol.Local) {
             withContext(Dispatchers.Swing) {
                 OptionPane.showMessageDialog(owner, I18n.getString("termora.new-host.test-connection-successful"))
             }
             return
         }
 
+        try {
+            if (host.protocol == Protocol.SSH) {
+                testSSH(host)
+            } else if (host.protocol == Protocol.Serial) {
+                testSerial(host)
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Swing) {
+                OptionPane.showMessageDialog(
+                    owner, ExceptionUtils.getMessage(e),
+                    messageType = JOptionPane.ERROR_MESSAGE
+                )
+            }
+            return
+        }
+
+        withContext(Dispatchers.Swing) {
+            OptionPane.showMessageDialog(
+                owner,
+                I18n.getString("termora.new-host.test-connection-successful")
+            )
+        }
+
+    }
+
+    private fun testSSH(host: Host) {
         var client: SshClient? = null
         var session: ClientSession? = null
         try {
             client = SshClients.openClient(host)
             client.userInteraction = TerminalUserInteraction(owner)
             session = SshClients.openSession(host, client)
-            withContext(Dispatchers.Swing) {
-                OptionPane.showMessageDialog(
-                    owner,
-                    I18n.getString("termora.new-host.test-connection-successful")
-                )
-            }
-        } catch (e: Exception) {
-            withContext(Dispatchers.Swing) {
-                OptionPane.showMessageDialog(
-                    owner, ExceptionUtils.getRootCauseMessage(e),
-                    messageType = JOptionPane.ERROR_MESSAGE
-                )
-            }
         } finally {
             session?.close()
             client?.close()
         }
+    }
 
+    private fun testSerial(host: Host) {
+        Serials.openPort(host).closePort()
     }
 
     override fun doOKAction() {
