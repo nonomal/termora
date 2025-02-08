@@ -9,7 +9,10 @@ import java.io.FileNotFoundException
 import java.nio.file.Files
 import javax.swing.Icon
 
-class LogViewerTerminalTab(windowScope: WindowScope, private val file: File) : PtyHostTerminalTab(
+class LogViewerTerminalTab(
+    windowScope: WindowScope,
+    private val file: File,
+) : PtyHostTerminalTab(
     windowScope,
     Host(
         name = file.name,
