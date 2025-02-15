@@ -29,9 +29,9 @@ class SFTPPtyTerminalTab(windowScope: WindowScope, host: Host) : PtyHostTerminal
     companion object {
         val canSupports by lazy {
             val process = if (SystemInfo.isWindows) {
-                ProcessBuilder("cmd.exe", "/c", "where", "sftp1").start()
+                ProcessBuilder("cmd.exe", "/c", "where", "sftp").start()
             } else {
-                ProcessBuilder("which", "sftp1").start()
+                ProcessBuilder("which", "sftp").start()
             }
             process.waitFor()
             return@lazy process.exitValue() == 0
