@@ -6,6 +6,7 @@ import com.fazecast.jSerialComm.SerialPort
 import com.formdev.flatlaf.FlatClientProperties
 import com.formdev.flatlaf.extras.components.FlatComboBox
 import com.formdev.flatlaf.ui.FlatTextBorder
+import com.formdev.flatlaf.util.SystemInfo
 import com.jgoodies.forms.builder.FormBuilder
 import com.jgoodies.forms.layout.FormLayout
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +15,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.swing.Swing
 import kotlinx.coroutines.withContext
 import org.apache.commons.lang3.StringUtils
+import org.eclipse.jgit.internal.transport.sshd.agent.connector.PageantConnector
+import org.eclipse.jgit.internal.transport.sshd.agent.connector.UnixDomainSocketConnector
+import org.eclipse.jgit.internal.transport.sshd.agent.connector.WinPipeConnector
 import java.awt.*
 import java.awt.event.*
 import java.nio.charset.Charset
@@ -21,7 +25,7 @@ import javax.swing.*
 import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.DefaultTableModel
 
-
+@Suppress("CascadeIf")
 open class HostOptionsPane : OptionsPane() {
     protected val tunnelingOption = TunnelingOption()
     protected val generalOption = GeneralOption()
@@ -52,17 +56,22 @@ open class HostOptionsPane : OptionsPane() {
         val port = (generalOption.portTextField.value ?: 22) as Int
         var authentication = Authentication.No
         var proxy = Proxy.No
+        val authenticationType = generalOption.authenticationTypeComboBox.selectedItem as AuthenticationType
 
-
-        if (generalOption.authenticationTypeComboBox.selectedItem == AuthenticationType.Password) {
+        if (authenticationType == AuthenticationType.Password) {
             authentication = authentication.copy(
-                type = AuthenticationType.Password,
+                type = authenticationType,
                 password = String(generalOption.passwordTextField.password)
             )
-        } else if (generalOption.authenticationTypeComboBox.selectedItem == AuthenticationType.PublicKey) {
+        } else if (authenticationType == AuthenticationType.PublicKey) {
             authentication = authentication.copy(
-                type = AuthenticationType.PublicKey,
+                type = authenticationType,
                 password = generalOption.publicKeyComboBox.selectedItem?.toString() ?: StringUtils.EMPTY
+            )
+        } else if (authenticationType == AuthenticationType.SSHAgent) {
+            authentication = authentication.copy(
+                type = authenticationType,
+                password = generalOption.sshAgentComboBox.selectedItem?.toString() ?: StringUtils.EMPTY
             )
         }
 
@@ -200,6 +209,7 @@ open class HostOptionsPane : OptionsPane() {
         private val passwordPanel = JPanel(BorderLayout())
         private val chooseKeyBtn = JButton(Icons.greyKey)
         val passwordTextField = OutlinePasswordField(255)
+        val sshAgentComboBox = OutlineComboBox<String>()
         val publicKeyComboBox = OutlineComboBox<String>()
         val remarkTextArea = FixedLengthTextArea(512)
         val authenticationTypeComboBox = FlatComboBox<AuthenticationType>()
@@ -214,6 +224,10 @@ open class HostOptionsPane : OptionsPane() {
 
             publicKeyComboBox.isEditable = false
             chooseKeyBtn.isFocusable = false
+
+            // 只有 Windows 允许修改
+            sshAgentComboBox.isEditable = SystemInfo.isWindows
+            sshAgentComboBox.isEnabled = SystemInfo.isWindows
 
             protocolTypeComboBox.renderer = object : DefaultListCellRenderer() {
                 override fun getListCellRendererComponent(
@@ -294,6 +308,17 @@ open class HostOptionsPane : OptionsPane() {
             authenticationTypeComboBox.addItem(AuthenticationType.No)
             authenticationTypeComboBox.addItem(AuthenticationType.Password)
             authenticationTypeComboBox.addItem(AuthenticationType.PublicKey)
+            authenticationTypeComboBox.addItem(AuthenticationType.SSHAgent)
+
+            if (SystemInfo.isWindows) {
+                // 不要修改 addItem 的顺序，因为第一个是默认的
+                sshAgentComboBox.addItem(PageantConnector.DESCRIPTOR.identityAgent)
+                sshAgentComboBox.addItem(WinPipeConnector.DESCRIPTOR.identityAgent)
+                sshAgentComboBox.placeholderText = PageantConnector.DESCRIPTOR.identityAgent
+            } else {
+                sshAgentComboBox.addItem(UnixDomainSocketConnector.DESCRIPTOR.identityAgent)
+                sshAgentComboBox.placeholderText = UnixDomainSocketConnector.DESCRIPTOR.identityAgent
+            }
 
             authenticationTypeComboBox.selectedItem = AuthenticationType.Password
 
@@ -457,6 +482,8 @@ open class HostOptionsPane : OptionsPane() {
                         .add(chooseKeyBtn).xy(3, 1)
                         .build(), BorderLayout.CENTER
                 )
+            } else if (authenticationTypeComboBox.selectedItem == AuthenticationType.SSHAgent) {
+                passwordPanel.add(sshAgentComboBox, BorderLayout.CENTER)
             } else {
                 passwordPanel.add(passwordTextField, BorderLayout.CENTER)
             }

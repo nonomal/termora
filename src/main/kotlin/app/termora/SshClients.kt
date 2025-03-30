@@ -1,14 +1,17 @@
 package app.termora
 
 import app.termora.keyboardinteractive.TerminalUserInteraction
-import app.termora.keymgr.KeyManager
 import app.termora.keymgr.OhKeyPairKeyPairProvider
 import app.termora.terminal.TerminalSize
+import com.formdev.flatlaf.FlatLaf
+import com.formdev.flatlaf.util.FontUtils
+import com.formdev.flatlaf.util.SystemInfo
+import com.jgoodies.forms.builder.FormBuilder
+import com.jgoodies.forms.layout.FormLayout
 import org.apache.commons.io.IOUtils
 import org.apache.commons.lang3.StringUtils
 import org.apache.sshd.client.ClientBuilder
 import org.apache.sshd.client.SshClient
-import org.apache.sshd.client.auth.password.PasswordIdentityProvider
 import org.apache.sshd.client.auth.password.UserAuthPasswordFactory
 import org.apache.sshd.client.channel.ChannelShell
 import org.apache.sshd.client.channel.ClientChannelEvent
@@ -21,23 +24,30 @@ import org.apache.sshd.client.keyverifier.ModifiedServerKeyAcceptor
 import org.apache.sshd.client.keyverifier.ServerKeyVerifier
 import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.common.AttributeRepository
+import org.apache.sshd.common.SshConstants
 import org.apache.sshd.common.SshException
 import org.apache.sshd.common.channel.PtyChannelConfiguration
+import org.apache.sshd.common.config.keys.KeyRandomArt
 import org.apache.sshd.common.config.keys.KeyUtils
 import org.apache.sshd.common.global.KeepAliveHandler
 import org.apache.sshd.common.kex.BuiltinDHFactories
 import org.apache.sshd.common.keyprovider.KeyIdentityProvider
-import org.apache.sshd.common.session.SessionContext
 import org.apache.sshd.common.util.net.SshdSocketAddress
 import org.apache.sshd.core.CoreModuleProperties
 import org.apache.sshd.server.forward.AcceptAllForwardingFilter
 import org.apache.sshd.server.forward.RejectAllForwardingFilter
 import org.eclipse.jgit.internal.transport.sshd.JGitClientSession
 import org.eclipse.jgit.internal.transport.sshd.JGitSshClient
+import org.eclipse.jgit.internal.transport.sshd.agent.JGitSshAgentFactory
+import org.eclipse.jgit.internal.transport.sshd.agent.connector.PageantConnector
+import org.eclipse.jgit.internal.transport.sshd.agent.connector.UnixDomainSocketConnector
 import org.eclipse.jgit.transport.CredentialsProvider
+import org.eclipse.jgit.transport.SshConstants.IDENTITY_AGENT
 import org.eclipse.jgit.transport.sshd.IdentityPasswordProvider
 import org.eclipse.jgit.transport.sshd.ProxyData
+import org.eclipse.jgit.transport.sshd.agent.ConnectorFactory
 import org.slf4j.LoggerFactory
+import java.awt.Font
 import java.awt.Window
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
@@ -45,15 +55,15 @@ import java.net.Proxy
 import java.net.SocketAddress
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.security.KeyPair
 import java.security.PublicKey
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.swing.JOptionPane
-import javax.swing.SwingUtilities
+import java.util.concurrent.atomic.AtomicReference
+import javax.swing.*
 import kotlin.math.max
 
+@Suppress("CascadeIf")
 object SshClients {
 
     val HOST_KEY = AttributeRepository.AttributeKey<Host>()
@@ -190,6 +200,16 @@ object SshClients {
         entry.hostName = host.host
         entry.setProperty("Middleware", middleware.toString())
 
+        // ssh-agent
+        if (host.authentication.type == AuthenticationType.SSHAgent) {
+            if (host.authentication.password.isNotBlank())
+                entry.setProperty(IDENTITY_AGENT, host.authentication.password)
+            else if (SystemInfo.isWindows)
+                entry.setProperty(IDENTITY_AGENT, PageantConnector.DESCRIPTOR.identityAgent)
+            else
+                entry.setProperty(IDENTITY_AGENT, UnixDomainSocketConnector.DESCRIPTOR.identityAgent)
+        }
+
         val session = client.connect(entry).verify(timeout).session
         if (host.authentication.type == AuthenticationType.Password) {
             session.addPasswordIdentity(host.authentication.password)
@@ -197,21 +217,16 @@ object SshClients {
             session.keyIdentityProvider = OhKeyPairKeyPairProvider(host.authentication.password)
         }
 
-        val owner = client.properties["owner"] as Window?
-        if (owner != null) {
-            val identityProvider = IdentityProvider(host, owner)
-            session.passwordIdentityProvider = identityProvider
-            val combinedKeyIdentityProvider = CombinedKeyIdentityProvider()
-            if (session.keyIdentityProvider != null) {
-                combinedKeyIdentityProvider.addKeyKeyIdentityProvider(session.keyIdentityProvider)
+        try {
+            if (!session.auth().verify(timeout).await(timeout)) {
+                throw SshException("Authentication failed")
             }
-            combinedKeyIdentityProvider.addKeyKeyIdentityProvider(identityProvider)
-            session.keyIdentityProvider = combinedKeyIdentityProvider
-        }
-
-        val verifyTimeout = Duration.ofSeconds(timeout.seconds * 5)
-        if (!session.auth().verify(verifyTimeout).await(verifyTimeout)) {
-            throw SshException("Authentication failed")
+        } catch (e: Exception) {
+            if (e !is SshException || e.disconnectCode != SshConstants.SSH2_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE) throw e
+            val owner = client.properties["owner"] as Window? ?: throw e
+            val authentication = ask(host, owner) ?: throw e
+            if (authentication.type == AuthenticationType.No) throw e
+            return doOpenSession(host.copy(authentication = authentication), client)
         }
 
         session.setAttribute(HOST_KEY, host)
@@ -299,7 +314,11 @@ object SshClients {
         sshClient.keyIdentityProvider = KeyIdentityProvider { mutableListOf() }
 
         // 设置优先级
-        if (host.authentication.type == AuthenticationType.PublicKey) {
+        if (host.authentication.type == AuthenticationType.PublicKey || host.authentication.type == AuthenticationType.SSHAgent) {
+            if (host.authentication.type == AuthenticationType.SSHAgent) {
+                // ssh-agent
+                sshClient.agentFactory = JGitSshAgentFactory(ConnectorFactory.getDefault(), null)
+            }
             CoreModuleProperties.PREFERRED_AUTHS.set(
                 sshClient,
                 listOf(
@@ -350,6 +369,24 @@ object SshClients {
         return sshClient
     }
 
+    private fun ask(host: Host, owner: Window): Authentication? {
+        val ref = AtomicReference<Authentication>(null)
+        SwingUtilities.invokeAndWait {
+            val dialog = RequestAuthenticationDialog(owner, host)
+            dialog.setLocationRelativeTo(owner)
+            val authentication = dialog.getAuthentication().apply { ref.set(this) }
+            // save
+            if (dialog.isRemembered()) {
+                hostManager.addHost(
+                    host.copy(
+                        authentication = authentication,
+                        username = dialog.getUsername(), updateDate = System.currentTimeMillis(),
+                    )
+                )
+            }
+        }
+        return ref.get()
+    }
 
     private class MyDialogServerKeyVerifier(private val owner: Window) : ServerKeyVerifier, ModifiedServerKeyAcceptor {
         override fun verifyServerKey(
@@ -368,26 +405,69 @@ object SshClients {
             actual: PublicKey?
         ): Boolean {
             val result = AtomicBoolean(false)
-
-            SwingUtilities.invokeAndWait {
-                result.set(
-                    OptionPane.showConfirmDialog(
-                        parentComponent = owner,
-                        message = I18n.getString(
-                            "termora.host.modified-server-key",
-                            remoteAddress.toString().replace("/", StringUtils.EMPTY),
-                            KeyUtils.getKeyType(expected),
-                            KeyUtils.getFingerPrint(expected),
-                            KeyUtils.getKeyType(actual),
-                            KeyUtils.getFingerPrint(actual),
-                        ),
-                        optionType = JOptionPane.OK_CANCEL_OPTION,
-                        messageType = JOptionPane.WARNING_MESSAGE,
-                    ) == JOptionPane.OK_OPTION
-                )
-            }
-
+            SwingUtilities.invokeAndWait { result.set(ask(remoteAddress, expected, actual) == JOptionPane.OK_OPTION) }
             return result.get()
+        }
+
+        private fun ask(
+            remoteAddress: SocketAddress?,
+            expected: PublicKey?,
+            actual: PublicKey?
+        ): Int {
+            val formMargin = "7dlu"
+            val layout = FormLayout(
+                "default:grow",
+                "pref, 12dlu, pref, 4dlu, pref, 2dlu, pref, $formMargin, pref, $formMargin, pref, pref, 12dlu, pref"
+            )
+
+            val errorColor = if (FlatLaf.isLafDark()) UIManager.getColor("Component.warning.focusedBorderColor") else
+                UIManager.getColor("Component.error.focusedBorderColor")
+            val font = FontUtils.getCompositeFont("JetBrains Mono", Font.PLAIN, 12)
+            val artBox = Box.createHorizontalBox()
+            artBox.add(Box.createHorizontalGlue())
+            val expectedBox = Box.createVerticalBox()
+            for (line in KeyRandomArt(expected).toString().lines()) {
+                val label = JLabel(line)
+                label.font = font
+                expectedBox.add(label)
+            }
+            artBox.add(expectedBox)
+            artBox.add(Box.createHorizontalGlue())
+            val actualBox = Box.createVerticalBox()
+            for (line in KeyRandomArt(actual).toString().lines()) {
+                val label = JLabel(line)
+                label.foreground = errorColor
+                label.font = font
+                actualBox.add(label)
+            }
+            artBox.add(actualBox)
+            artBox.add(Box.createHorizontalGlue())
+
+            var rows = 1
+            val step = 2
+
+            // @formatter:off
+            val address = remoteAddress.toString().replace("/", StringUtils.EMPTY)
+            val panel = FormBuilder.create().layout(layout)
+                .add("<html><b>${I18n.getString("termora.host.modified-server-key.title", address)}</b></html>").xy(1, rows).apply { rows += step }
+                .add("${I18n.getString("termora.host.modified-server-key.thumbprint")}:").xy(1, rows).apply { rows += step }
+                .add("  ${I18n.getString("termora.host.modified-server-key.expected")}: ${KeyUtils.getFingerPrint(expected)}").xy(1, rows).apply { rows += step }
+                .add("<html>&nbsp;&nbsp;${I18n.getString("termora.host.modified-server-key.actual")}: <font color=rgb(${errorColor.red},${errorColor.green},${errorColor.blue})>${KeyUtils.getFingerPrint(actual)}</font></html>").xy(1, rows).apply { rows += step }
+                .addSeparator(StringUtils.EMPTY).xy(1, rows).apply { rows += step }
+                .add(artBox).xy(1, rows).apply { rows += step }
+                .addSeparator(StringUtils.EMPTY).xy(1, rows).apply { rows += 1 }
+                .add(I18n.getString("termora.host.modified-server-key.are-you-sure")).xy(1, rows).apply { rows += step }
+                .build()
+            // @formatter:on
+
+            return OptionPane.showConfirmDialog(
+                owner,
+                panel,
+                "SSH Security Warning",
+                messageType = JOptionPane.WARNING_MESSAGE,
+                optionType = JOptionPane.OK_CANCEL_OPTION
+            )
+
         }
     }
 
@@ -417,55 +497,5 @@ object SshClients {
         }
     }
 
-
-    private class IdentityProvider(private val host: Host, private val owner: Window) : PasswordIdentityProvider,
-        KeyIdentityProvider {
-        private val asked = AtomicBoolean(false)
-        private val hostManager get() = HostManager.getInstance()
-        private val keyManager get() = KeyManager.getInstance()
-        private var authentication = Authentication.No
-
-        override fun loadPasswords(session: SessionContext): MutableIterable<String> {
-            val authentication = ask()
-            if (authentication.type != AuthenticationType.Password) {
-                return mutableListOf()
-            }
-            return mutableListOf(authentication.password)
-        }
-
-        override fun loadKeys(session: SessionContext): MutableIterable<KeyPair> {
-            val authentication = ask()
-            if (authentication.type != AuthenticationType.PublicKey) {
-                return mutableListOf()
-            }
-            val ohKeyPair = keyManager.getOhKeyPair(authentication.password) ?: return mutableListOf()
-            return mutableListOf(OhKeyPairKeyPairProvider.generateKeyPair(ohKeyPair))
-        }
-
-        private fun ask(): Authentication {
-            if (asked.compareAndSet(false, true)) {
-               askNow()
-            }
-            return authentication
-        }
-
-        private fun askNow() {
-            if (SwingUtilities.isEventDispatchThread()) {
-                val dialog = RequestAuthenticationDialog(owner, host)
-                dialog.setLocationRelativeTo(owner)
-                authentication = dialog.getAuthentication()
-                // save
-                if (dialog.isRemembered()) {
-                    val host = host.copy(
-                        authentication = authentication,
-                        username = dialog.getUsername(), updateDate = System.currentTimeMillis(),
-                    )
-                    hostManager.addHost(host)
-                }
-            } else {
-                SwingUtilities.invokeAndWait { askNow() }
-            }
-        }
-    }
 }
 
