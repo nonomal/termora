@@ -7,12 +7,13 @@ import app.termora.actions.DataProviders
 import app.termora.sftp.SFTPTab
 import app.termora.terminal.DataKey
 import com.formdev.flatlaf.FlatClientProperties
+import com.formdev.flatlaf.FlatLaf
+import com.formdev.flatlaf.ui.FlatRootPaneUI
+import com.formdev.flatlaf.ui.FlatTitlePane
 import com.formdev.flatlaf.util.SystemInfo
 import com.jetbrains.JBR
 import org.apache.commons.lang3.ArrayUtils
-import java.awt.BorderLayout
-import java.awt.Dimension
-import java.awt.Insets
+import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseListener
@@ -42,7 +43,6 @@ class TermoraFrame : JFrame(), DataProvider {
     private val dataProviderSupport = DataProviderSupport()
     private val welcomePanel = WelcomePanel(windowScope)
     private val sftp get() = Database.getDatabase().sftp
-    private val myUI = MyFlatRootPaneUI()
     private var notifyListeners = emptyArray<NotifyListener>()
 
 
@@ -88,17 +88,24 @@ class TermoraFrame : JFrame(), DataProvider {
                 }
 
                 private fun getMouseLayer(): JComponent? {
-                    val titlePane = myUI.getTitlePane() ?: return null
+                    val titlePane = getTitlePane() ?: return null
                     val handlerField = titlePane.javaClass.getDeclaredField("mouseLayer") ?: return null
                     handlerField.isAccessible = true
                     return handlerField.get(titlePane) as? JComponent
                 }
 
                 private fun getHandler(): Any? {
-                    val titlePane = myUI.getTitlePane() ?: return null
+                    val titlePane = getTitlePane() ?: return null
                     val handlerField = titlePane.javaClass.getDeclaredField("handler") ?: return null
                     handlerField.isAccessible = true
                     return handlerField.get(titlePane)
+                }
+
+                private fun getTitlePane(): FlatTitlePane? {
+                    val ui = rootPane.ui as? FlatRootPaneUI ?: return null
+                    val titlePaneField = ui.javaClass.getDeclaredField("titlePane")
+                    titlePaneField.isAccessible = true
+                    return titlePaneField.get(ui) as? FlatTitlePane
                 }
             }
             toolbar.getJToolBar().addMouseListener(mouseAdapter)
@@ -173,7 +180,6 @@ class TermoraFrame : JFrame(), DataProvider {
             // Windows 10 会有1像素误差
             tabbedPane.tabAreaInsets = Insets(if (SystemInfo.isWindows_11_orLater) 1 else 2, 2, 0, 0)
         } else if (SystemInfo.isLinux) {
-            rootPane.setUI(myUI)
             tabbedPane.tabAreaInsets = Insets(1, 2, 0, 0)
         }
 
@@ -212,6 +218,11 @@ class TermoraFrame : JFrame(), DataProvider {
                 terminalTabbed.addTerminalTab(SFTPTab(), false)
             }
         }
+
+        val glassPane = GlassPane()
+        rootPane.glassPane = glassPane
+        glassPane.isOpaque = false
+        glassPane.isVisible = true
 
 
         Disposer.register(windowScope, terminalTabbed)
@@ -253,5 +264,20 @@ class TermoraFrame : JFrame(), DataProvider {
     override fun addNotify() {
         super.addNotify()
         notifyListeners.forEach { it.addNotify() }
+    }
+
+
+    private class GlassPane : JComponent() {
+        override fun paintComponent(g: Graphics) {
+            val img = BackgroundManager.getInstance().getBackgroundImage() ?: return
+            val g2d = g as Graphics2D
+            g2d.composite = AlphaComposite.getInstance(
+                AlphaComposite.SRC_OVER,
+                if (FlatLaf.isLafDark()) 0.2f else 0.1f
+            )
+            g2d.drawImage(img, 0, 0, width, height, null)
+            g2d.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER)
+        }
+
     }
 }
